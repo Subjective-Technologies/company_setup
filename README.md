@@ -8,14 +8,14 @@ Clone this repository on the new server and run `company_setup.sh` as root. The 
 
 - Ubuntu 22.04, 24.04, or newer
 - Root
-- An SSH key on the server that can read the private `Subjective-Technologies` repositories. The API, CLIProxy, and the chat UI are private.
+- An SSH key on the server that can read the private `Subjective-Technologies` repositories. This repository is public. The API, CLIProxy, and the chat UI are private, and the script clones them over SSH.
 
 ## Run
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y git
-git clone git@github.com:Subjective-Technologies/company_setup.git
+git clone https://github.com/Subjective-Technologies/company_setup.git
 cd company_setup
 sudo ./company_setup.sh "Company Name"
 ```

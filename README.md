@@ -28,6 +28,14 @@ sudo ./company_setup.sh --dry-run "Company Name"
 
 Running it again keeps existing checkouts, the generated key, and unit files that already belong to this tree.
 
+Check the install after it finishes. This is read-only and exits 0 only when the files, git checkouts, and both services are healthy:
+
+```bash
+sudo ./company_verify.sh "Company Name"
+```
+
+Omit the name to accept whatever `/company_name` already contains. A service that is down, a checkout that is missing, or a health check that fails makes the script exit 1. No provider login yet is a warning, not a failure.
+
 ## Services
 
 | Unit | Listen |

@@ -8,7 +8,7 @@ Clone this repository on the new server and run `company_setup.sh` as root. The 
 
 - Ubuntu 22.04, 24.04, or newer
 - Root
-- An SSH key on the server that can read the private `Subjective-Technologies` repositories. This repository is public. The API, CLIProxy, and the chat UI are private, and the script clones them over SSH.
+- No GitHub account on the server. This repository, the DevAgents API, CLIProxy, the chat UI, and the API submodules are public and are cloned over HTTPS.
 
 ## Run
 

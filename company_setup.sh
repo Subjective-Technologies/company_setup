@@ -39,7 +39,7 @@
 
 set -euo pipefail
 
-GIT_ORG="${GIT_ORG:-git@github.com:Subjective-Technologies}"
+GIT_ORG="${GIT_ORG:-https://github.com/Subjective-Technologies}"
 SUBJECTIVE_ROOT="${SUBJECTIVE_ROOT:-/subjective}"
 COMPANY_FILE="${COMPANY_FILE:-/company_name}"
 SETUP_USER="${SETUP_USER:-subjective}"
@@ -148,7 +148,7 @@ clone_repo() {
       if [[ "$DRY_RUN" -eq 1 ]]; then
         log "dry-run: git -C $dest submodule update --init --recursive"
       else
-        git -C "$dest" submodule update --init --recursive
+        git -C "$dest" -c url.https://github.com/.insteadOf=git@github.com: submodule update --init --recursive
       fi
     fi
     return 0
@@ -163,7 +163,10 @@ clone_repo() {
     return 0
   fi
   mkdir -p "$(dirname "$dest")"
-  GIT_TERMINAL_PROMPT=0 git clone --recurse-submodules "$url" "$dest"
+  # Submodule URLs in the API repo are SSH. Rewrite them to HTTPS for this clone
+  # so a server with no GitHub key can fetch the public repositories.
+  GIT_TERMINAL_PROMPT=0 git -c url.https://github.com/.insteadOf=git@github.com: \
+    clone --recurse-submodules "$url" "$dest"
 }
 
 install_packages() {

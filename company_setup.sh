@@ -148,7 +148,7 @@ clone_repo() {
       if [[ "$DRY_RUN" -eq 1 ]]; then
         log "dry-run: git -C $dest submodule update --init --recursive"
       else
-        git -C "$dest" -c url.https://github.com/.insteadOf=git@github.com: submodule update --init --recursive
+        git -C "$dest" -c 'safe.directory=*' -c url.https://github.com/.insteadOf=git@github.com: submodule update --init --recursive
       fi
     fi
     return 0
@@ -272,7 +272,7 @@ install_cliproxy_binary() {
     log "keep $PROXY_BIN"
     return 0
   fi
-  local asset tag version url tmp tar extracted binary group
+  local asset tag version archive url tmp binary group
   asset="$(cliproxy_asset)"
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "dry-run: download CLIProxyAPI ${CLIPROXY_VERSION:-latest} ${asset} -> $PROXY_BIN"
@@ -287,19 +287,20 @@ install_cliproxy_binary() {
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')"
   fi
   version="${tag#v}"
-  url="https://github.com/router-for-me/CLIProxyAPI/releases/download/${tag}/CLIProxyAPI_${version}_${asset}.tar.gz"
+  archive="CLIProxyAPI_${version}_${asset}.tar.gz"
+  url="https://github.com/router-for-me/CLIProxyAPI/releases/download/${tag}/${archive}"
   tmp="$(mktemp -d)"
-  tar="$tmp/cli-proxy-api.tar.gz"
   log "download $url"
-  curl -fL --retry 3 -o "$tar" "$url"
+  # The checksum file names the archive. Saving under that name is what sha256sum -c checks.
+  curl -fL --retry 3 -o "$tmp/$archive" "$url"
   curl -fsSL -o "$tmp/checksums.txt" \
     "https://github.com/router-for-me/CLIProxyAPI/releases/download/${tag}/checksums.txt"
   (
     cd "$tmp"
-    grep "CLIProxyAPI_${version}_${asset}.tar.gz" checksums.txt | sha256sum -c -
+    grep "$archive" checksums.txt | sha256sum -c -
   )
   mkdir -p "$tmp/extract"
-  tar -xzf "$tar" -C "$tmp/extract"
+  tar -xzf "$tmp/$archive" -C "$tmp/extract"
   binary="$(find "$tmp/extract" -type f \( -name cli-proxy-api -o -name CLIProxyAPI \) -print -quit)"
   if [[ -z "$binary" ]]; then
     echo "refuse: release archive has no cli-proxy-api binary" >&2

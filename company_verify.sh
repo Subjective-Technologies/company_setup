@@ -99,6 +99,11 @@ check_user() {
   fi
 }
 
+# Repos are owned by the service user. Root must opt in or git refuses them.
+git_as_root() {
+  git -c 'safe.directory=*' -C "$1" "${@:2}"
+}
+
 check_git_repo() {
   local dest="$1"
   local label="$2"
@@ -110,12 +115,13 @@ check_git_repo() {
     fail "$label is not a git checkout: $dest"
     return
   fi
-  local sha
-  if ! sha="$(git -C "$dest" rev-parse --verify HEAD 2>/dev/null)"; then
-    fail "$label HEAD is not a commit: $dest"
+  local sha err
+  if ! err="$(git_as_root "$dest" rev-parse --verify HEAD 2>&1)"; then
+    fail "$label git: ${err//$'\n'/ }"
     return
   fi
-  if ! git -C "$dest" cat-file -e "$sha" 2>/dev/null; then
+  sha="$err"
+  if ! git_as_root "$dest" cat-file -e "$sha" 2>/dev/null; then
     fail "$label object database is missing $sha"
     return
   fi
@@ -127,8 +133,15 @@ check_submodules() {
     fail "API submodules file missing: $API_DIR/.gitmodules"
     return
   fi
-  local missing=0 line path
+  local status
+  if ! status="$(git_as_root "$API_DIR" submodule status --recursive 2>&1)"; then
+    fail "API submodule status: ${status//$'\n'/ }"
+    return
+  fi
+  local missing=0 line path count=0
   while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    count=$((count + 1))
     case "$line" in
       -*)
         missing=1
@@ -136,10 +149,12 @@ check_submodules() {
         fail "API submodule not checked out: $path"
         ;;
     esac
-  done < <(git -C "$API_DIR" submodule status --recursive 2>/dev/null || true)
+  done <<<"$status"
+  if [[ "$count" -eq 0 ]]; then
+    fail "API submodule list is empty"
+    return
+  fi
   if [[ "$missing" -eq 0 ]]; then
-    local count
-    count="$(git -C "$API_DIR" submodule status --recursive 2>/dev/null | wc -l)"
     ok "API submodules checked out ($count)"
   fi
 }

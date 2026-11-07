@@ -351,7 +351,7 @@ check_http() {
     curl_tls=(-k)
     ok "API TLS files present; checking $base"
   else
-    ok "API has no TLS files; checking $base"
+    warn "API has no TLS files yet; browsers on https cannot call it (see subjective-api-tls.timer); checking $base"
   fi
   local body
   if body="$(curl -fsS --max-time 5 "${curl_tls[@]}" "$base/healthz" 2>/dev/null)" && grep -q '"ok"[[:space:]]*:[[:space:]]*true' <<<"$body"; then

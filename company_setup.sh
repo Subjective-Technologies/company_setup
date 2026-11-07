@@ -64,6 +64,13 @@ else
   PROXY_DISABLE_PANEL="true"
 fi
 PROXY_CONFIG_CHANGED=0
+# HTTPS for the DevAgents API on :8080 (Let's Encrypt, same as production
+# devagents-api.subjectivetechnologies.com). One certificate covers
+# <company>-api.<zone> for every zone. DNS is created by provision_server.py;
+# until it resolves, a timer retries every 15 minutes. API_TLS=0 disables.
+API_TLS="${API_TLS:-1}"
+API_TLS_ZONES="${API_TLS_ZONES:-subjectivetechnologies.com worktwins.com}"
+API_TLS_DIR="/etc/subjective-devagents-fastapi/tls"
 
 API_DIR="${SUBJECTIVE_ROOT}/services/subjective_devagents_fastapi"
 PROXY_DIR="${SUBJECTIVE_ROOT}/services/CLIProxyAPI"
@@ -78,7 +85,7 @@ MODEL_CLAUDE="${SUBJECTIVE_DEVAGENTS_LLM_MODEL_CLAUDE:-claude-sonnet-4-5-2025092
 MODEL_CODEX="${SUBJECTIVE_DEVAGENTS_LLM_MODEL_CODEX:-gpt-5.6-sol}"
 MODEL_GROK="${SUBJECTIVE_DEVAGENTS_LLM_MODEL_GROK:-grok-4.6}"
 MODEL_KIMI="${SUBJECTIVE_DEVAGENTS_LLM_MODEL_KIMI:-kimi-k2.8-code}"
-PUBLIC_API="${SUBJECTIVE_DEVAGENTS_PUBLIC_API:-http://127.0.0.1:8080}"
+PUBLIC_API="${SUBJECTIVE_DEVAGENTS_PUBLIC_API-}"
 
 DRY_RUN=0
 
@@ -649,9 +656,100 @@ verify_services() {
     exit 1
   fi
   rm -f "$curlcfg"
-  if ! wait_http "http://127.0.0.1:8080/healthz"; then
+  local api_url="http://127.0.0.1:8080/healthz" api_extra=()
+  if [[ -f "$API_TLS_DIR/fullchain.pem" && -f "$API_TLS_DIR/privkey.pem" ]]; then
+    api_url="https://127.0.0.1:8080/healthz"
+    api_extra=(-k)
+  fi
+  if ! wait_http "$api_url" "${api_extra[@]}"; then
     journalctl -u subjective-devagents-fastapi.service -n 40 --no-pager >&2 || true
     exit 1
+  fi
+}
+
+# Keep SUBJECTIVE_DEVAGENTS_PUBLIC_API empty (same-origin) in an existing env
+# file. The old default http://127.0.0.1:8080 made the served page call the
+# visitor's own machine.
+enforce_public_api() {
+  [[ "$DRY_RUN" -eq 1 || ! -f "$ENV_FILE" ]] && return 0
+  if grep -q '^SUBJECTIVE_DEVAGENTS_PUBLIC_API=http://127.0.0.1:8080$' "$ENV_FILE"; then
+    sed -i 's#^SUBJECTIVE_DEVAGENTS_PUBLIC_API=http://127.0.0.1:8080$#SUBJECTIVE_DEVAGENTS_PUBLIC_API=#' "$ENV_FILE"
+    API_ENV_CHANGED=1
+    log "fix  $ENV_FILE SUBJECTIVE_DEVAGENTS_PUBLIC_API= (same-origin)"
+  fi
+}
+API_ENV_CHANGED=0
+
+setup_api_tls() {
+  if [[ "$API_TLS" != "1" ]]; then
+    log "skip API TLS (API_TLS=$API_TLS)"
+    return 0
+  fi
+  local label domains="" zone
+  label="$(printf '%s' "$COMPANY_NAME" | tr '[:upper:]' '[:lower:]')"
+  for zone in $API_TLS_ZONES; do
+    domains+="${domains:+,}${label}-api.${zone}"
+  done
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "dry-run: certbot certonly --standalone -d $domains; install subjective-api-tls.timer"
+    return 0
+  fi
+  apt-get install -y certbot
+  mkdir -p "$API_TLS_DIR"
+  chmod 755 /etc/subjective-devagents-fastapi
+  cat >/usr/local/sbin/subjective-api-tls-deploy.sh <<EOF
+#!/bin/bash
+# certbot deploy hook: copy the certificate where run-systemd.sh looks, restart the API.
+set -euo pipefail
+live=/etc/letsencrypt/live/subjective-api
+install -d -m 750 -o ${SETUP_USER} -g $(id -gn "$SETUP_USER") ${API_TLS_DIR}
+install -m 600 -o ${SETUP_USER} -g $(id -gn "$SETUP_USER") "\$live/fullchain.pem" ${API_TLS_DIR}/fullchain.pem
+install -m 600 -o ${SETUP_USER} -g $(id -gn "$SETUP_USER") "\$live/privkey.pem" ${API_TLS_DIR}/privkey.pem
+systemctl restart subjective-devagents-fastapi.service
+EOF
+  chmod 755 /usr/local/sbin/subjective-api-tls-deploy.sh
+  cat >/usr/local/sbin/subjective-api-tls.sh <<EOF
+#!/bin/bash
+# Obtain the API certificate once DNS resolves. Renewal is certbot.timer's job.
+set -uo pipefail
+if [[ -f /etc/letsencrypt/live/subjective-api/fullchain.pem ]]; then
+  [[ -f ${API_TLS_DIR}/fullchain.pem ]] || /usr/local/sbin/subjective-api-tls-deploy.sh
+  systemctl disable --now subjective-api-tls.timer >/dev/null 2>&1 || true
+  exit 0
+fi
+certbot certonly --standalone --non-interactive --agree-tos \\
+  --register-unsafely-without-email --cert-name subjective-api \\
+  --deploy-hook /usr/local/sbin/subjective-api-tls-deploy.sh \\
+  -d ${domains}
+EOF
+  chmod 755 /usr/local/sbin/subjective-api-tls.sh
+  cat >/etc/systemd/system/subjective-api-tls.service <<EOF
+[Unit]
+Description=Obtain Let's Encrypt certificate for the DevAgents API (${domains})
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/subjective-api-tls.sh
+EOF
+  cat >/etc/systemd/system/subjective-api-tls.timer <<EOF
+[Unit]
+Description=Retry the DevAgents API certificate until DNS resolves
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  if /usr/local/sbin/subjective-api-tls.sh; then
+    log "ok   API TLS for $domains"
+  else
+    log "wait API TLS for $domains (DNS not ready?); subjective-api-tls.timer retries every 15 min"
+    systemctl enable --now subjective-api-tls.timer
   fi
 }
 
@@ -702,17 +800,24 @@ chown_tree
 install_venv
 install_cliproxy_binary
 write_env_file
+enforce_public_api
 write_proxy_config
 write_runner
 install_units
 start_unit "cli-proxy-api.service" 8317
 start_unit "subjective-devagents-fastapi.service" 8080
+if [[ "$API_ENV_CHANGED" -eq 1 && "$DRY_RUN" -eq 0 ]]; then
+  log "restart subjective-devagents-fastapi.service (env changed)"
+  systemctl restart subjective-devagents-fastapi.service
+fi
 verify_services
+setup_api_tls
 
 log "done"
 log "services: cli-proxy-api.service on ${PROXY_HOST:-0.0.0.0}:8317, subjective-devagents-fastapi.service on :8080"
 log "client key: $ENV_FILE (not printed)"
 log "management key: $MGMT_KEY_FILE (not printed)"
 log "not installed: nginx :8788, port-80 socket, legacy Node :8787, logs service, vendor CLIs"
-log "still manual: provider login into $PROXY_DIR/auths, API TLS cert"
+log "still manual: provider login into $PROXY_DIR/auths"
+log "API: https://<company>-api.<zone>:8080 (Let's Encrypt; subjective-api-tls.timer retries until DNS resolves)"
 log "public DNS + Cloudflare :8317 rule: provision_server.py (https://<company>-cliproxy.<zone>)"

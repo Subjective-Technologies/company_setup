@@ -40,10 +40,10 @@ Omit the name to accept whatever `/company_name` already contains. A service tha
 
 | Unit | Listen |
 |---|---|
-| `cli-proxy-api.service` | `127.0.0.1:8317` |
+| `cli-proxy-api.service` | `0.0.0.0:8317` |
 | `subjective-devagents-fastapi.service` | `0.0.0.0:8080` |
 
-The proxy client key is stored in `/etc/subjective-devagents-fastapi.env` (mode 600) and is not printed. CLIProxy accepts connections from this machine only.
+The proxy client key is stored in `/etc/subjective-devagents-fastapi.env` (mode 600) and is not printed. The web dashboard reaches CLIProxy through Cloudflare at `https://<company>-cliproxy.<zone>`. `provision_server.py` creates that DNS record and the Cloudflare rule that forwards it to port 8317. So CLIProxy listens on all interfaces with `management.allow-remote: true` and the control panel on. `/v1` still needs the client key and `/v0/management` the management key. Re-running `company_setup.sh` puts those three settings back if they drifted, and restarts the proxy only when something changed. `CLIPROXY_PUBLIC=0` keeps the old localhost-only mode.
 
 ## After the services are up
 

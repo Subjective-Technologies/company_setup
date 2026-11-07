@@ -15,12 +15,17 @@
 #
 # Then, as root, it installs and starts two systemd units:
 #
-#   cli-proxy-api.service                   127.0.0.1:8317
+#   cli-proxy-api.service                   0.0.0.0:8317
 #   subjective-devagents-fastapi.service    0.0.0.0:8080
 #
-# CLIProxy is bound to localhost. The API is the only client. A client key is
-# generated once and stored in /etc/subjective-devagents-fastapi.env (mode 600).
-# It is not printed.
+# The web dashboard reaches CLIProxy through Cloudflare at
+# https://<company>-cliproxy.<zone> (DNS + Origin Rule :8317 are created by
+# provision_server.py). So CLIProxy listens on all interfaces with
+# management.allow-remote: true and the control panel on. Every request still
+# needs the client key (/v1) or the management key (/v0/management).
+# CLIPROXY_PUBLIC=0 keeps the old localhost-only mode.
+# The client key is generated once and stored in
+# /etc/subjective-devagents-fastapi.env (mode 600). It is not printed.
 #
 # Not installed. They are not required to execute the API or CLIProxy:
 #   nginx on 127.0.0.1:8788 and the port-80 socket (public hostname front)
@@ -34,7 +39,9 @@
 #   sudo -u subjective /subjective/services/CLIProxyAPI/bin/cli-proxy-api \
 #     --config /subjective/services/CLIProxyAPI/config.yaml --claude-login
 #
-# Re-running keeps existing checkouts, config, env, and unit files.
+# Re-running keeps existing checkouts, keys, env, and unit files. In config.yaml
+# only server.host, management.allow-remote and disable-control-panel are
+# re-enforced (and the proxy restarted if one of them changed).
 # If /subjective is already the full monorepo, the script stops and changes nothing.
 
 set -euo pipefail
@@ -46,6 +53,17 @@ SETUP_USER="${SETUP_USER:-subjective}"
 ENV_FILE="${ENV_FILE:-/etc/subjective-devagents-fastapi.env}"
 MGMT_KEY_FILE="${MGMT_KEY_FILE:-/etc/cli-proxy-api.management-key}"
 CLIPROXY_VERSION="${CLIPROXY_VERSION:-}"
+CLIPROXY_PUBLIC="${CLIPROXY_PUBLIC:-1}"
+if [[ "$CLIPROXY_PUBLIC" == "1" ]]; then
+  PROXY_HOST=""
+  PROXY_ALLOW_REMOTE="true"
+  PROXY_DISABLE_PANEL="false"
+else
+  PROXY_HOST="127.0.0.1"
+  PROXY_ALLOW_REMOTE="false"
+  PROXY_DISABLE_PANEL="true"
+fi
+PROXY_CONFIG_CHANGED=0
 
 API_DIR="${SUBJECTIVE_ROOT}/services/subjective_devagents_fastapi"
 PROXY_DIR="${SUBJECTIVE_ROOT}/services/CLIProxyAPI"
@@ -359,9 +377,70 @@ env_value() {
   grep -m1 "^${key}=" "$ENV_FILE" | cut -d= -f2-
 }
 
+# Rewrite only server.host, management.allow-remote and
+# management.disable-control-panel in an existing config. Keys stay as they are.
+enforce_proxy_network() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "dry-run: enforce $PROXY_CONFIG host='${PROXY_HOST}' allow-remote=${PROXY_ALLOW_REMOTE} disable-control-panel=${PROXY_DISABLE_PANEL}"
+    return 0
+  fi
+  local result
+  result="$(python3 - "$PROXY_CONFIG" "$PROXY_HOST" "$PROXY_ALLOW_REMOTE" "$PROXY_DISABLE_PANEL" <<'PY'
+import pathlib, re, sys
+path, host, allow, panel = sys.argv[1:5]
+want = {
+    "server": {"host": '"%s"' % host},
+    "management": {"allow-remote": allow, "disable-control-panel": panel},
+}
+lines = pathlib.Path(path).read_text().splitlines()
+out, section, seen = [], None, {k: set() for k in want}
+def flush(sec):
+    if sec in want:
+        for key, val in want[sec].items():
+            if key not in seen[sec]:
+                out.append("  %s: %s" % (key, val))
+                seen[sec].add(key)
+for line in lines:
+    top = re.match(r"^([A-Za-z0-9_-]+):\s*(#.*)?$", line)
+    if top or (line and not line.startswith((" ", "#"))):
+        flush(section)
+        section = top.group(1) if top else None
+        out.append(line)
+        continue
+    m = re.match(r"^  ([A-Za-z0-9_-]+):", line)
+    if section in want and m and m.group(1) in want[section]:
+        key = m.group(1)
+        out.append("  %s: %s" % (key, want[section][key]))
+        seen[section].add(key)
+        continue
+    out.append(line)
+flush(section)
+for sec in want:
+    if sec not in [l.rstrip(":") for l in out if re.match(r"^[A-Za-z0-9_-]+:$", l)]:
+        out.append(sec + ":")
+        for key, val in want[sec].items():
+            out.append("  %s: %s" % (key, val))
+new = "\n".join(out) + "\n"
+old = pathlib.Path(path).read_text()
+if new != old:
+    pathlib.Path(path).write_text(new)
+    print("changed")
+else:
+    print("same")
+PY
+)"
+  if [[ "$result" == "changed" ]]; then
+    PROXY_CONFIG_CHANGED=1
+    log "fix  $PROXY_CONFIG host='${PROXY_HOST}' allow-remote=${PROXY_ALLOW_REMOTE} disable-control-panel=${PROXY_DISABLE_PANEL}"
+  else
+    log "ok   $PROXY_CONFIG network settings"
+  fi
+}
+
 write_proxy_config() {
   if [[ -f "$PROXY_CONFIG" ]]; then
     log "keep $PROXY_CONFIG"
+    enforce_proxy_network
     return 0
   fi
   log "write $PROXY_CONFIG"
@@ -379,14 +458,14 @@ write_proxy_config() {
   cat >"$PROXY_CONFIG" <<EOF
 config-version: 8
 server:
-  host: "127.0.0.1"
+  host: "${PROXY_HOST}"
   port: 8317
   tls:
     enable: false
 management:
-  allow-remote: false
+  allow-remote: ${PROXY_ALLOW_REMOTE}
   secret-key: "${management_key}"
-  disable-control-panel: true
+  disable-control-panel: ${PROXY_DISABLE_PANEL}
 access:
   api-keys:
     - "${client_key}"
@@ -520,6 +599,11 @@ start_unit() {
   fi
   systemctl daemon-reload
   if systemctl is-active --quiet "$unit"; then
+    if [[ "$unit" == "cli-proxy-api.service" && "$PROXY_CONFIG_CHANGED" -eq 1 ]]; then
+      log "restart $unit (config changed)"
+      systemctl restart "$unit"
+      return 0
+    fi
     log "active $unit"
     return 0
   fi
@@ -626,8 +710,9 @@ start_unit "subjective-devagents-fastapi.service" 8080
 verify_services
 
 log "done"
-log "services: cli-proxy-api.service on 127.0.0.1:8317, subjective-devagents-fastapi.service on :8080"
+log "services: cli-proxy-api.service on ${PROXY_HOST:-0.0.0.0}:8317, subjective-devagents-fastapi.service on :8080"
 log "client key: $ENV_FILE (not printed)"
 log "management key: $MGMT_KEY_FILE (not printed)"
 log "not installed: nginx :8788, port-80 socket, legacy Node :8787, logs service, vendor CLIs"
-log "still manual: provider login into $PROXY_DIR/auths, TLS certs, public DNS"
+log "still manual: provider login into $PROXY_DIR/auths, API TLS cert"
+log "public DNS + Cloudflare :8317 rule: provision_server.py (https://<company>-cliproxy.<zone>)"

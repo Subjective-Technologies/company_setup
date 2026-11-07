@@ -18,6 +18,7 @@ COMPANY_FILE="${COMPANY_FILE:-/company_name}"
 SETUP_USER="${SETUP_USER:-subjective}"
 ENV_FILE="${ENV_FILE:-/etc/subjective-devagents-fastapi.env}"
 MGMT_KEY_FILE="${MGMT_KEY_FILE:-/etc/cli-proxy-api.management-key}"
+CLIPROXY_PUBLIC="${CLIPROXY_PUBLIC:-1}"
 
 API_DIR="${SUBJECTIVE_ROOT}/services/subjective_devagents_fastapi"
 PROXY_DIR="${SUBJECTIVE_ROOT}/services/CLIProxyAPI"
@@ -314,9 +315,17 @@ check_listeners() {
   if [[ -z "$rows" ]]; then
     fail "nothing is listening on port 8317"
   elif grep -Eq '(^|[^0-9])(\*|0\.0\.0\.0|\[::\]):8317$' <<<"$rows"; then
-    fail "CLIProxy is listening outside localhost: $rows"
+    if [[ "$CLIPROXY_PUBLIC" == "1" ]]; then
+      ok "CLIProxy listens on all interfaces for the dashboard: $rows"
+    else
+      fail "CLIProxy is listening outside localhost: $rows (CLIPROXY_PUBLIC=0)"
+    fi
   elif grep -q '127.0.0.1:8317' <<<"$rows"; then
-    ok "CLIProxy listens on 127.0.0.1:8317"
+    if [[ "$CLIPROXY_PUBLIC" == "1" ]]; then
+      fail "CLIProxy listens on 127.0.0.1 only; the dashboard cannot reach it (re-run company_setup.sh)"
+    else
+      ok "CLIProxy listens on 127.0.0.1:8317"
+    fi
   else
     fail "CLIProxy listener is unexpected: $rows"
   fi
@@ -375,6 +384,22 @@ check_http() {
   fi
 }
 
+check_proxy_remote() {
+  [[ "$CLIPROXY_PUBLIC" == "1" && -f "$PROXY_CONFIG" ]] || return 0
+  if grep -Eq '^  allow-remote:[[:space:]]*true' "$PROXY_CONFIG"; then
+    ok "CLIProxy management allow-remote true"
+  else
+    fail "CLIProxy management allow-remote is not true; the dashboard cannot manage it"
+  fi
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8317/management.html || true)"
+  if [[ "$code" == "200" ]]; then
+    ok "CLIProxy control panel /management.html 200"
+  else
+    fail "CLIProxy /management.html returned $code, expected 200"
+  fi
+}
+
 check_provider_logins() {
   local count
   if [[ ! -d "$PROXY_DIR/auths" ]]; then
@@ -411,6 +436,7 @@ check_unit "cli-proxy-api.service" "$PROXY_BIN"
 check_unit "subjective-devagents-fastapi.service" "$RUNNER"
 check_listeners
 check_http
+check_proxy_remote
 check_provider_logins
 
 echo

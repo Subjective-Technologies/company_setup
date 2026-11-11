@@ -49,7 +49,7 @@ The proxy client key is stored in `/etc/subjective-devagents-fastapi.env` (mode 
 
 Each machine has its own CLIProxy. Provider subscriptions stay in that machine's `auths/` directory and are not part of these repositories. A chat turn needs a provider login there. The proxy process starts without one. Antigravity login also needs that company's own Google OAuth client in `ANTIGRAVITY_OAUTH_CLIENT_ID` and `ANTIGRAVITY_OAUTH_CLIENT_SECRET` on the proxy service. Claude, Codex, Grok, and Kimi logins use the provider's public client and then store only that user's subscription locally.
 
-Sign-in is a Firebase ID token for this machine's project. Any account that token verifies for is accepted. The virtual machine is the account boundary, so a new VM does not need an owner email or UID. Set `FIREBASE_PROJECT_ID`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_API_KEY`, and `FIREBASE_APP_ID` in `/etc/subjective-devagents-fastapi.env` when that company uses its own Firebase project. Until then tokens are checked against `subjectivetechnologies-login`.
+Sign-in is a Firebase ID token for this machine's project. Any account that token verifies for is accepted. The virtual machine is the account boundary, so a new VM does not need an owner email or UID. Set `FIREBASE_PROJECT_ID`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_API_KEY`, and `FIREBASE_APP_ID` in `/etc/subjective-devagents-fastapi.env`. The API does not assume a project when those are empty.
 
 ```bash
 sudo -u subjective /subjective/services/CLIProxyAPI/bin/cli-proxy-api \

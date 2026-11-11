@@ -357,8 +357,8 @@ SUBJECTIVE_DEVAGENTS_CLIENT_ROOT=${CHAT_DIR}
 SUBJECTIVE_DEVAGENTS_SERVE_UI=1
 SUBJECTIVE_DEVAGENTS_PUBLIC_API=${PUBLIC_API}
 SUBJECTIVE_DEVAGENTS_AUTH_MODE=owner
-# This company's Firebase project. Leave commented to use subjectivetechnologies-login.
-# Any verified Firebase account for that project can sign in. The VM is the account boundary.
+# This company's Firebase project. Required for sign-in; there is no built-in default.
+# Any Firebase account for that project can sign in. The VM is the account boundary.
 # FIREBASE_PROJECT_ID=
 # FIREBASE_AUTH_DOMAIN=
 # FIREBASE_API_KEY=

@@ -53,6 +53,7 @@ SETUP_USER="${SETUP_USER:-subjective}"
 ENV_FILE="${ENV_FILE:-/etc/subjective-devagents-fastapi.env}"
 MGMT_KEY_FILE="${MGMT_KEY_FILE:-/etc/cli-proxy-api.management-key}"
 CLIPROXY_VERSION="${CLIPROXY_VERSION:-}"
+FIREBASE_PROJECT_ID="${FIREBASE_PROJECT_ID:-subjectivetechnologies-login}"
 CLIPROXY_PUBLIC="${CLIPROXY_PUBLIC:-1}"
 if [[ "$CLIPROXY_PUBLIC" == "1" ]]; then
   PROXY_HOST=""
@@ -357,9 +358,12 @@ SUBJECTIVE_DEVAGENTS_CLIENT_ROOT=${CHAT_DIR}
 SUBJECTIVE_DEVAGENTS_SERVE_UI=1
 SUBJECTIVE_DEVAGENTS_PUBLIC_API=${PUBLIC_API}
 SUBJECTIVE_DEVAGENTS_AUTH_MODE=owner
-# This company's Firebase project. Required for sign-in; there is no built-in default.
-# Any Firebase account for that project can sign in. The VM is the account boundary.
-# FIREBASE_PROJECT_ID=
+# The Firebase project whose accounts may sign in. Members reach this server through
+# the dashboard, which signs them in there, so our project is the default. A company
+# with its own project overrides it with FIREBASE_PROJECT_ID=... before the run.
+# Unset, every token is refused as "invalid firebase token".
+FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID}
+# Only the browser sign-in form in the DevAgents UI needs these.
 # FIREBASE_AUTH_DOMAIN=
 # FIREBASE_API_KEY=
 # FIREBASE_APP_ID=
@@ -679,6 +683,19 @@ enforce_public_api() {
 }
 API_ENV_CHANGED=0
 
+# A server installed before the project id was written has it commented out, and then
+# refuses every sign-in with "invalid firebase token". Re-running repairs it.
+enforce_firebase_project() {
+  [[ "$DRY_RUN" -eq 1 || ! -f "$ENV_FILE" ]] && return 0
+  if grep -q '^FIREBASE_PROJECT_ID=.' "$ENV_FILE"; then
+    return 0
+  fi
+  sed -i '/^# *FIREBASE_PROJECT_ID=/d' "$ENV_FILE"
+  printf 'FIREBASE_PROJECT_ID=%s\n' "$FIREBASE_PROJECT_ID" >>"$ENV_FILE"
+  API_ENV_CHANGED=1
+  log "fix  $ENV_FILE FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID"
+}
+
 setup_api_tls() {
   if [[ "$API_TLS" != "1" ]]; then
     log "skip API TLS (API_TLS=$API_TLS)"
@@ -800,6 +817,7 @@ install_venv
 install_cliproxy_binary
 write_env_file
 enforce_public_api
+enforce_firebase_project
 write_proxy_config
 write_runner
 install_units

@@ -228,7 +228,8 @@ check_env_contract() {
     SUBJECTIVE_DEVAGENTS_LLM_MODEL_CLAUDE \
     SUBJECTIVE_DEVAGENTS_LLM_MODEL_CODEX \
     SUBJECTIVE_DEVAGENTS_LLM_MODEL_GROK \
-    SUBJECTIVE_DEVAGENTS_LLM_MODEL_KIMI
+    SUBJECTIVE_DEVAGENTS_LLM_MODEL_KIMI \
+    FIREBASE_PROJECT_ID
   do
     value="$(env_value "$key")"
     if [[ -z "$value" ]]; then
@@ -358,6 +359,23 @@ check_http() {
     ok "API /healthz ok"
   else
     fail "API /healthz did not return ok"
+  fi
+
+  # Without a Firebase project the API answers, names its company, and then refuses
+  # every member with "invalid firebase token". That reads as a sign-in problem.
+  if body="$(curl -fsS --max-time 5 "${curl_tls[@]}" "$base/api/auth/config" 2>/dev/null)"; then
+    if grep -q '"projectId"[[:space:]]*:[[:space:]]*"[^"]' <<<"$body"; then
+      ok "API sign-in has a Firebase project"
+    else
+      fail "API has no Firebase project: set FIREBASE_PROJECT_ID in $ENV_FILE and restart, or nobody can sign in"
+    fi
+    if grep -q '"companyName"[[:space:]]*:[[:space:]]*"[^"]' <<<"$body"; then
+      ok "API names its company"
+    else
+      fail "API does not know its company name; check $COMPANY_FILE"
+    fi
+  else
+    fail "API /api/auth/config did not answer"
   fi
 
   local code key curlcfg

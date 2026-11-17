@@ -418,6 +418,60 @@ check_proxy_remote() {
   fi
 }
 
+# /<slug>/<slug>: the company's own repository, written by the agents. The slug
+# rule matches company_setup.sh and DevAgents' architecture_file.company_slug.
+check_company_clone() {
+  local name slug clone xmi
+  name="$(head -n 1 "$COMPANY_FILE" 2>/dev/null)"
+  slug="$(python3 - "$name" <<'PY'
+import re, sys
+slug = re.sub(r"[^a-z0-9-]+", "-", sys.argv[1].strip().lower()).strip("-")
+print("" if not slug or ".." in slug else slug[:80])
+PY
+)"
+  if [[ -z "$slug" ]]; then
+    fail "company clone: no folder name for '$name'"
+    return
+  fi
+  clone="/${slug}/${slug}"
+  if [[ ! -d "$clone" ]]; then
+    fail "company clone folder missing: $clone (re-run company_setup.sh)"
+    return
+  fi
+  if sudo -u "$SETUP_USER" test -w "$clone"; then
+    ok "company clone $clone writable by $SETUP_USER"
+  else
+    fail "company clone $clone is not writable by $SETUP_USER (re-run company_setup.sh)"
+  fi
+  if getfacl -p -n "$clone" 2>/dev/null | grep -q "^default:user:$(id -u "$SETUP_USER" 2>/dev/null):rw"; then
+    ok "company clone default ACL for $SETUP_USER"
+  else
+    fail "company clone $clone has no default ACL for $SETUP_USER; files the dashboard clones as root will be read-only to the agents"
+  fi
+  if git config --system --get-all safe.directory 2>/dev/null | grep -Fxq "$clone"; then
+    ok "git safe.directory $clone"
+  else
+    fail "git safe.directory missing for $clone"
+  fi
+  if [[ ! -d "$clone/.git" && ! -f "$clone/.git" ]]; then
+    warn "company repository not cloned into $clone yet"
+    return
+  fi
+  local denied
+  denied="$(sudo -u "$SETUP_USER" find "$clone" -path "$clone/.git" -prune -o ! -type l ! -writable -print 2>/dev/null | head -n 3)"
+  if [[ -n "$denied" ]]; then
+    fail "company clone has files $SETUP_USER cannot write, e.g. ${denied//$'\n'/, } (re-run company_setup.sh)"
+  else
+    ok "company clone files writable by $SETUP_USER"
+  fi
+  xmi="$clone/architecture/${slug}.xmi"
+  if [[ -s "$xmi" ]]; then
+    ok "architecture model $xmi ($(stat -c '%s' "$xmi") bytes)"
+  else
+    warn "architecture model missing or empty: $xmi; the UML editor opens the latest saved version instead"
+  fi
+}
+
 check_provider_logins() {
   local count
   if [[ ! -d "$PROXY_DIR/auths" ]]; then
@@ -455,6 +509,7 @@ check_unit "subjective-devagents-fastapi.service" "$RUNNER"
 check_listeners
 check_http
 check_proxy_remote
+check_company_clone
 check_provider_logins
 
 echo

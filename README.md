@@ -45,6 +45,12 @@ Omit the name to accept whatever `/company_name` already contains. A service tha
 
 The proxy client key is stored in `/etc/subjective-devagents-fastapi.env` (mode 600) and is not printed. The web dashboard reaches CLIProxy through Cloudflare at `https://<company>-cliproxy.<zone>`. `provision_server.py` creates that DNS record and the Cloudflare rule that forwards it to port 8317. So CLIProxy listens on all interfaces with `management.allow-remote: true` and the control panel on. `/v1` still needs the client key and `/v0/management` the management key. Re-running `company_setup.sh` puts those three settings back if they drifted, and restarts the proxy only when something changed. `CLIPROXY_PUBLIC=0` keeps the old localhost-only mode.
 
+## Company repository folder
+
+The script also creates `/<company>/<company>`, for example `/cardnexia/cardnexia`. The folder name is the company name in lowercase, with anything other than letters, digits and `-` turned into `-`. The company's own repository is cloned there, and the agents write the company's model and code there, for example `/cardnexia/cardnexia/architecture/cardnexia.xmi`. The UML editor opens that file.
+
+The dashboard clones the repository over SSH as root, but the agents run as `subjective`. So the script gives `subjective` read and write access through ACLs, default ACLs included. That covers files created later by root as well. It also adds the folder to the system git `safe.directory`, so root and `subjective` can both run git in it whoever owns the files. Running the script again fixes the permissions on a repository cloned before this step existed. `company_verify.sh` fails if `subjective` cannot write a file there. It warns if the repository or its `.xmi` model is still missing or empty.
+
 ## After the services are up
 
 Each machine has its own CLIProxy. Provider subscriptions stay in that machine's `auths/` directory and are not part of these repositories. A chat turn needs a provider login there. The proxy process starts without one. Antigravity login also needs that company's own Google OAuth client in `ANTIGRAVITY_OAUTH_CLIENT_ID` and `ANTIGRAVITY_OAUTH_CLIENT_SECRET` on the proxy service. Claude, Codex, Grok, and Kimi logins use the provider's public client and then store only that user's subscription locally.

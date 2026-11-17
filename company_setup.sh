@@ -39,6 +39,11 @@
 #   sudo -u subjective /subjective/services/CLIProxyAPI/bin/cli-proxy-api \
 #     --config /subjective/services/CLIProxyAPI/config.yaml --claude-login
 #
+# It also prepares /<slug>/<slug> (e.g. /cardnexia/cardnexia), where the
+# company's own repository is cloned and where the agents write its model and
+# code: default ACLs let the service user write there even though the dashboard
+# clones it as root, and a system safe.directory lets either user run git there.
+#
 # Re-running keeps existing checkouts, keys, env, and unit files. In config.yaml
 # only server.host, management.allow-remote and disable-control-panel are
 # re-enforced (and the proxy restarted if one of them changed).
@@ -196,7 +201,7 @@ clone_repo() {
 }
 
 install_packages() {
-  local packages=(python3 python3-venv python3-pip git ca-certificates curl tar gzip iproute2)
+  local packages=(python3 python3-venv python3-pip git ca-certificates curl tar gzip iproute2 acl)
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "dry-run: apt-get install ${packages[*]}"
     return 0
@@ -769,6 +774,61 @@ EOF
   fi
 }
 
+# The company's own repository lives at /<slug>/<slug> (workflow vm_root). Agents
+# write the company's model and code there, e.g.
+# /<slug>/<slug>/architecture/<slug>.xmi. The dashboard clones it later over SSH
+# as root, so the files end up owned by root while the agents run as
+# $SETUP_USER. Default ACLs give $SETUP_USER write access to everything created
+# there, now or later, and a system-wide safe.directory lets both root (the
+# dashboard's fetch) and $SETUP_USER (the agents) run git in it whoever owns it.
+# The slug rule matches DevAgents' architecture_file.company_slug.
+company_slug() {
+  python3 - "$1" <<'PY'
+import re, sys
+slug = re.sub(r"[^a-z0-9-]+", "-", sys.argv[1].strip().lower()).strip("-")
+print("" if not slug or ".." in slug else slug[:80])
+PY
+}
+
+prepare_company_clone() {
+  local slug group
+  slug="$(company_slug "$COMPANY_NAME")"
+  if [[ -z "$slug" ]]; then
+    echo "refuse: company name '$COMPANY_NAME' has no usable folder name" >&2
+    exit 1
+  fi
+  local base="${COMPANY_CLONE_BASE:-}"
+  COMPANY_CLONE="${base}/${slug}/${slug}"
+  log "company clone $COMPANY_CLONE (writable by $SETUP_USER)"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "dry-run: install -d $COMPANY_CLONE; setfacl -R u:$SETUP_USER:rwX + default; git config --system safe.directory $COMPANY_CLONE"
+    return 0
+  fi
+  if [[ -e "${base}/$slug" && ! -d "${base}/$slug" ]] || [[ -e "$COMPANY_CLONE" && ! -d "$COMPANY_CLONE" ]]; then
+    echo "refuse: $COMPANY_CLONE exists and is not a folder" >&2
+    exit 1
+  fi
+  group="$(id -gn "$SETUP_USER")"
+  # A new folder is root-owned with the service group; an existing one keeps its owner.
+  [[ -d "${base}/$slug" ]] || install -d -o root -g "$group" -m 2775 "${base}/$slug"
+  [[ -d "$COMPANY_CLONE" ]] || install -d -o root -g "$group" -m 2775 "$COMPANY_CLONE"
+  setfacl -m "u:${SETUP_USER}:rwx" "${base}/$slug"
+  # Existing files (a clone made before this ran) and everything created later.
+  setfacl -R -m "u:${SETUP_USER}:rwX" "$COMPANY_CLONE"
+  find "$COMPANY_CLONE" -type d -exec setfacl -m "d:u:${SETUP_USER}:rwX,d:g:${group}:rwX" {} +
+  if ! git config --system --get-all safe.directory 2>/dev/null | grep -Fxq "$COMPANY_CLONE"; then
+    git config --system --add safe.directory "$COMPANY_CLONE"
+    log "git safe.directory $COMPANY_CLONE"
+  fi
+  if sudo -u "$SETUP_USER" test -w "$COMPANY_CLONE"; then
+    log "ok   $SETUP_USER can write $COMPANY_CLONE"
+  else
+    echo "fail: $SETUP_USER cannot write $COMPANY_CLONE" >&2
+    exit 1
+  fi
+}
+COMPANY_CLONE=""
+
 foreign_unit() {
   local unit="$1"
   local marker="$2"
@@ -813,6 +873,7 @@ clone_repo "CLIProxyAPI.git" "services/CLIProxyAPI"
 clone_repo "subjective_chat.git" "clients/desktop/subjective_chat"
 
 chown_tree
+prepare_company_clone
 install_venv
 install_cliproxy_binary
 write_env_file
@@ -835,6 +896,7 @@ log "services: cli-proxy-api.service on ${PROXY_HOST:-0.0.0.0}:8317, subjective-
 log "client key: $ENV_FILE (not printed)"
 log "management key: $MGMT_KEY_FILE (not printed)"
 log "not installed: nginx :8788, port-80 socket, legacy Node :8787, logs service, vendor CLIs"
+log "company repo: clone it into ${COMPANY_CLONE:-/<company>/<company>} (dashboard: Companies -> computer -> repositories); agents write there"
 log "still manual: provider login into $PROXY_DIR/auths"
 log "API: https://<company>-api.<zone>:8080 (Let's Encrypt; subjective-api-tls.timer retries until DNS resolves)"
 log "public DNS + Cloudflare :8317 rule: provision_server.py (https://<company>-cliproxy.<zone>)"

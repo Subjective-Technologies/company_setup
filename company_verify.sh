@@ -494,6 +494,27 @@ PY
   fi
 }
 
+check_update_timer() {
+  local status_file=/var/lib/subjective-devagents/update.json
+  if systemctl is-enabled --quiet subjective-devagents-update.timer 2>/dev/null; then
+    ok "update timer enabled (follows the tested 'stable' tag)"
+  else
+    warn "subjective-devagents-update.timer not enabled; DevAgents updates only by hand (re-run company_setup.sh)"
+    return
+  fi
+  if [[ -f "$status_file" ]]; then
+    local outcome detail
+    outcome="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("outcome",""))' "$status_file" 2>/dev/null)"
+    detail="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("at",""), d.get("detail",""))' "$status_file" 2>/dev/null)"
+    case "$outcome" in
+      current|updated|available) ok "last update check: $outcome ($detail)" ;;
+      *) warn "last update check: $outcome ($detail); see journalctl -t devagents-update" ;;
+    esac
+  else
+    warn "update timer has not run yet"
+  fi
+}
+
 check_provider_logins() {
   local count
   if [[ ! -d "$PROXY_DIR/auths" ]]; then
@@ -532,6 +553,7 @@ check_listeners
 check_http
 check_proxy_remote
 check_company_clone
+check_update_timer
 check_provider_logins
 
 echo

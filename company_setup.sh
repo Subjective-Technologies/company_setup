@@ -857,6 +857,54 @@ prepare_company_clone() {
 }
 COMPANY_CLONE=""
 
+# DevAgents has no single deploy target: each company server follows the `stable`
+# tag, which the DevAgents pipeline moves only to commits whose tests passed. A timer
+# runs the repository's own scripts/update_from_stable.sh: fast-forward only, local
+# edits kept, running agent turns drained first, rollback if the service is unhealthy.
+# UPDATE_TIMER=0 skips it (the server is then updated by hand).
+UPDATE_TIMER="${UPDATE_TIMER:-1}"
+
+install_update_timer() {
+  local updater="$API_DIR/scripts/update_from_stable.sh"
+  if [[ "$UPDATE_TIMER" != "1" ]]; then
+    log "skip DevAgents update timer (UPDATE_TIMER=$UPDATE_TIMER)"
+    return 0
+  fi
+  log "DevAgents update timer: follows the tested 'stable' tag every 10 min"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "dry-run: install subjective-devagents-update.{service,timer} running $updater"
+    return 0
+  fi
+  cat >/etc/systemd/system/subjective-devagents-update.service <<UNIT
+[Unit]
+Description=Update DevAgents to the newest tested release (stable tag)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=API_DIR=${API_DIR}
+ExecStart=/bin/bash -c 'test -x ${updater} && exec ${updater} || echo "update_from_stable.sh not in this checkout yet; pull once by hand"'
+SyslogIdentifier=devagents-update
+UNIT
+  cat >/etc/systemd/system/subjective-devagents-update.timer <<'UNIT'
+[Unit]
+Description=Check for a new tested DevAgents release
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now subjective-devagents-update.timer >/dev/null
+  log "ok   subjective-devagents-update.timer enabled"
+}
+
 foreign_unit() {
   local unit="$1"
   local marker="$2"
@@ -918,6 +966,7 @@ if [[ "$API_ENV_CHANGED" -eq 1 && "$DRY_RUN" -eq 0 ]]; then
 fi
 verify_services
 setup_api_tls
+install_update_timer
 
 log "done"
 log "services: cli-proxy-api.service on ${PROXY_HOST:-0.0.0.0}:8317, subjective-devagents-fastapi.service on :8080"
@@ -925,6 +974,7 @@ log "client key: $ENV_FILE (not printed)"
 log "management key: $MGMT_KEY_FILE (not printed)"
 log "not installed: nginx :8788, port-80 socket, legacy Node :8787, logs service, vendor CLIs"
 log "company repo: clone it into ${COMPANY_CLONE:-/<company>/<company>} (dashboard: Companies -> computer -> repositories); agents write there"
+log "updates: subjective-devagents-update.timer follows the tested 'stable' tag (journalctl -t devagents-update)"
 log "still manual: provider login into $PROXY_DIR/auths"
 log "API: https://<company>-devagents.<zone>:8080 (Let's Encrypt; subjective-api-tls.timer retries until DNS resolves)"
 log "public DNS + Cloudflare :8317 rule: provision_server.py (https://<company>-cliproxy.<zone>)"

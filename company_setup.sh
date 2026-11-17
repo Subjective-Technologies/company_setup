@@ -70,10 +70,11 @@ else
   PROXY_DISABLE_PANEL="true"
 fi
 PROXY_CONFIG_CHANGED=0
-# HTTPS for the DevAgents API on :8080 (Let's Encrypt, same as production
-# devagents-api.subjectivetechnologies.com). One certificate covers
-# <company>-api.<zone> for every zone. DNS is created by provision_server.py;
-# until it resolves, a timer retries every 15 minutes. API_TLS=0 disables.
+# HTTPS for the DevAgents API on :8080. One certificate covers
+# <company>-devagents.<zone> for every zone. The public URL is
+# https://<company>-devagents.<zone>:8080. DNS for that name is created when
+# the VM is provisioned; until it resolves, a timer retries every 15 minutes.
+# API_TLS=0 disables.
 API_TLS="${API_TLS:-1}"
 API_TLS_ZONES="${API_TLS_ZONES:-subjectivetechnologies.com worktwins.com}"
 API_TLS_DIR="/etc/subjective-devagents-fastapi/tls"
@@ -701,16 +702,22 @@ enforce_firebase_project() {
   log "fix  $ENV_FILE FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID"
 }
 
+api_tls_domains() {
+  local label domains="" zone
+  label="$(printf '%s' "$COMPANY_NAME" | tr '[:upper:]' '[:lower:]')"
+  for zone in $API_TLS_ZONES; do
+    domains+="${domains:+,}${label}-devagents.${zone}"
+  done
+  printf '%s\n' "$domains"
+}
+
 setup_api_tls() {
   if [[ "$API_TLS" != "1" ]]; then
     log "skip API TLS (API_TLS=$API_TLS)"
     return 0
   fi
-  local label domains="" zone
-  label="$(printf '%s' "$COMPANY_NAME" | tr '[:upper:]' '[:lower:]')"
-  for zone in $API_TLS_ZONES; do
-    domains+="${domains:+,}${label}-api.${zone}"
-  done
+  local domains
+  domains="$(api_tls_domains)"
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "dry-run: certbot certonly --standalone -d $domains; install subjective-api-tls.timer"
     return 0
@@ -722,7 +729,7 @@ setup_api_tls() {
 #!/bin/bash
 # certbot deploy hook: copy the certificate where run-systemd.sh looks, restart the API.
 set -euo pipefail
-live=/etc/letsencrypt/live/subjective-api
+live=/etc/letsencrypt/live/subjective-devagents
 install -d -m 750 -o ${SETUP_USER} -g $(id -gn "$SETUP_USER") ${API_TLS_DIR}
 install -m 600 -o ${SETUP_USER} -g $(id -gn "$SETUP_USER") "\$live/fullchain.pem" ${API_TLS_DIR}/fullchain.pem
 install -m 600 -o ${SETUP_USER} -g $(id -gn "$SETUP_USER") "\$live/privkey.pem" ${API_TLS_DIR}/privkey.pem
@@ -731,15 +738,36 @@ EOF
   chmod 755 /usr/local/sbin/subjective-api-tls-deploy.sh
   cat >/usr/local/sbin/subjective-api-tls.sh <<EOF
 #!/bin/bash
-# Obtain the API certificate once DNS resolves. Renewal is certbot.timer's job.
+# Obtain the DevAgents certificate for ${domains} once DNS resolves.
+# A certificate that already has those names is left in place. Renewal is
+# certbot.timer's job. The previous subjective-api lineage is not deleted.
 set -uo pipefail
-if [[ -f /etc/letsencrypt/live/subjective-api/fullchain.pem ]]; then
-  [[ -f ${API_TLS_DIR}/fullchain.pem ]] || /usr/local/sbin/subjective-api-tls-deploy.sh
-  systemctl disable --now subjective-api-tls.timer >/dev/null 2>&1 || true
-  exit 0
+desired="${domains}"
+live=/etc/letsencrypt/live/subjective-devagents/fullchain.pem
+
+cert_names() {
+  openssl x509 -in "\$1" -noout -ext subjectAltName 2>/dev/null \\
+    | tr ',' '\\n' \\
+    | sed -n 's/.*DNS://p' \\
+    | tr -d ' ' \\
+    | sort \\
+    | paste -sd, -
+}
+
+want="\$(printf '%s\\n' "\${desired//,/ }" | tr ' ' '\\n' | sed '/^$/d' | sort | paste -sd, -)"
+if [[ -f "\$live" ]]; then
+  have="\$(cert_names "\$live")"
+  if [[ "\$have" == "\$want" ]]; then
+    installed="${API_TLS_DIR}/fullchain.pem"
+    if [[ ! -f "\$installed" || "\$(cert_names "\$installed")" != "\$want" ]]; then
+      /usr/local/sbin/subjective-api-tls-deploy.sh
+    fi
+    systemctl disable --now subjective-api-tls.timer >/dev/null 2>&1 || true
+    exit 0
+  fi
 fi
 certbot certonly --standalone --non-interactive --agree-tos \\
-  --register-unsafely-without-email --cert-name subjective-api \\
+  --register-unsafely-without-email --cert-name subjective-devagents \\
   --deploy-hook /usr/local/sbin/subjective-api-tls-deploy.sh \\
   -d ${domains}
 EOF
@@ -898,5 +926,5 @@ log "management key: $MGMT_KEY_FILE (not printed)"
 log "not installed: nginx :8788, port-80 socket, legacy Node :8787, logs service, vendor CLIs"
 log "company repo: clone it into ${COMPANY_CLONE:-/<company>/<company>} (dashboard: Companies -> computer -> repositories); agents write there"
 log "still manual: provider login into $PROXY_DIR/auths"
-log "API: https://<company>-api.<zone>:8080 (Let's Encrypt; subjective-api-tls.timer retries until DNS resolves)"
+log "API: https://<company>-devagents.<zone>:8080 (Let's Encrypt; subjective-api-tls.timer retries until DNS resolves)"
 log "public DNS + Cloudflare :8317 rule: provision_server.py (https://<company>-cliproxy.<zone>)"

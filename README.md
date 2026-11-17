@@ -43,6 +43,8 @@ Omit the name to accept whatever `/company_name` already contains. A service tha
 | `cli-proxy-api.service` | `0.0.0.0:8317` |
 | `subjective-devagents-fastapi.service` | `0.0.0.0:8080` |
 
+DevAgents is served at `https://<company>-devagents.<zone>:8080` for each zone (`subjectivetechnologies.com` and `worktwins.com`). `company_setup.sh` requests one Let's Encrypt certificate covering those names. The DNS records are created when the VM is provisioned. Until they resolve, `subjective-api-tls.timer` retries the certificate every 15 minutes.
+
 The proxy client key is stored in `/etc/subjective-devagents-fastapi.env` (mode 600) and is not printed. The web dashboard reaches CLIProxy through Cloudflare at `https://<company>-cliproxy.<zone>`. `provision_server.py` creates that DNS record and the Cloudflare rule that forwards it to port 8317. So CLIProxy listens on all interfaces with `management.allow-remote: true` and the control panel on. `/v1` still needs the client key and `/v0/management` the management key. Re-running `company_setup.sh` puts those three settings back if they drifted, and restarts the proxy only when something changed. `CLIPROXY_PUBLIC=0` keeps the old localhost-only mode.
 
 ## Company repository folder

@@ -28,6 +28,7 @@ PROXY_CONFIG="${PROXY_DIR}/config.yaml"
 RUNNER="${API_DIR}/run-systemd.sh"
 TLS_CERT="/etc/subjective-devagents-fastapi/tls/fullchain.pem"
 TLS_KEY="/etc/subjective-devagents-fastapi/tls/privkey.pem"
+API_TLS_ZONES="${API_TLS_ZONES:-subjectivetechnologies.com worktwins.com}"
 
 EXPECTED_COMPANY="${1:-}"
 failures=0
@@ -337,6 +338,26 @@ check_listeners() {
   fi
 }
 
+check_api_certificate_names() {
+  local company label zone expected="" have want
+  company="$(head -n 1 "$COMPANY_FILE" 2>/dev/null || true)"
+  if [[ -z "$company" ]]; then
+    warn "API certificate names not checked; company file is empty"
+    return
+  fi
+  label="$(printf '%s' "$company" | tr '[:upper:]' '[:lower:]')"
+  for zone in $API_TLS_ZONES; do
+    expected+="${expected:+,}${label}-devagents.${zone}"
+  done
+  have="$(openssl x509 -in "$TLS_CERT" -noout -ext subjectAltName 2>/dev/null | tr ',' '\n' | sed -n 's/.*DNS://p' | tr -d ' ' | sort | paste -sd, -)"
+  want="$(tr ',' '\n' <<<"$expected" | sed '/^$/d' | sort | paste -sd, -)"
+  if [[ "$have" == "$want" ]]; then
+    ok "API certificate covers $expected"
+  else
+    warn "API certificate names are '${have:-none}'; expected $expected"
+  fi
+}
+
 api_base() {
   if [[ -f "$TLS_CERT" && -f "$TLS_KEY" ]]; then
     printf '%s\n' "https://127.0.0.1:8080"
@@ -351,6 +372,7 @@ check_http() {
   if [[ "$base" == https:* ]]; then
     curl_tls=(-k)
     ok "API TLS files present; checking $base"
+    check_api_certificate_names
   else
     warn "API has no TLS files yet; browsers on https cannot call it (see subjective-api-tls.timer); checking $base"
   fi
